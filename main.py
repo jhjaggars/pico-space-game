@@ -1,11 +1,19 @@
 import random
 
 from machine import ADC, I2C, Pin
+from ssd1306 import SSD1306_I2C
 from tm1637 import TM1637
 
-from ssd1306 import SSD1306_I2C
+button = Pin(6, Pin.IN, Pin.PULL_DOWN)
+PRESSED = 0
 
-button = Pin(6)
+def button_press(b):
+    global PRESSED
+    if PRESSED == 0 and b.value():
+        PRESSED = 1
+
+button.irq(handler=button_press, trigger=Pin.IRQ_RISING)
+
 pot = ADC(Pin(26))
 
 FLYING = 0
@@ -80,7 +88,7 @@ class Mission:
     def __init__(self, distance):
         self.goal_distance = distance
         self.flown = 0
-        self.reward = self.goal_distance * (max(.1, min(.5, random.random())))
+        self.reward = int(self.goal_distance * (max(.1, min(.5, random.random()))))
         self.done = False
         stars.text = ["mission distance", "%d/%d" % (self.flown, self.goal_distance)]
 
@@ -101,20 +109,22 @@ class Mission:
 # game loop
 mission = Mission(random.randint(2000, 5000))
 while True:
-    pressed = button.value()
     if MODE == FLYING:
         STATE_TM.show(" fly")
-        if pressed:
+        if PRESSED:
             MODE = FUELING
+            PRESSED = 0
     elif MODE == FUELING:
         STATE_TM.show("fuel")
-        if pressed:
+        if PRESSED:
             MODE = FLYING
+            PRESSED = 0
     elif MODE == PARKED:
         STATE_TM.show("park")
-        if pressed:
+        if PRESSED:
             mission = Mission(random.randint(2000, 5000))
             MODE = FLYING
+            PRESSED = 0
     else:
         STATE_TM.show(" err")
 
