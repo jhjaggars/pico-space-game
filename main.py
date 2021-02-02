@@ -2,7 +2,6 @@ import random
 
 from machine import ADC, I2C, Pin
 from ssd1306 import SSD1306_I2C
-from tm1637 import TM1637
 
 button = Pin(6, Pin.IN, Pin.PULL_DOWN)
 PRESSED = 0
@@ -20,38 +19,6 @@ FLYING = 0
 FUELING = 1
 PARKED = 2
 MODE = PARKED
-
-STATE_TM =TM1637(clk=Pin(17), dio=Pin(16))
-STATE_TM.brightness(7)
-
-class Fuel:
-    def __init__(self):
-        self.fuel = 9999
-
-        self.gauge = TM1637(clk=Pin(0), dio=Pin(1))
-        self.gauge.brightness(6)
-        self.gauge.number(self.fuel)
-
-
-    def tick(self):
-        global MODE
-        burn_rate = int(10 * (pot.read_u16() / 65535))
-
-        if MODE == FLYING and self.fuel > 0:
-            self.fuel -= (1 + burn_rate)
-        elif MODE == FUELING:
-            self.add(1)
-        if self.fuel <= 0:
-            self.fuel = 0 # in case we burned into the negatives
-            MODE = FUELING
-
-        self.gauge.number(self.fuel)
-
-    def add(self, amount):
-        self.fuel = min(9999, self.fuel + amount)
-
-fuel = Fuel()
-
 
 class Starfield:
 
@@ -80,6 +47,36 @@ class Starfield:
         self.oled.show()
         self.oled.fill(0)
 stars = Starfield()
+
+
+class Fuel:
+    MAX_FUEL = 9999
+
+    def __init__(self):
+        self.fuel = self.MAX_FUEL
+
+    def tick(self):
+        global MODE
+        burn_rate = int(10 * (pot.read_u16() / 65535))
+
+        if MODE == FLYING and self.fuel > 0:
+            self.fuel -= (1 + burn_rate)
+        elif MODE == FUELING:
+            self.add(1)
+        if self.fuel <= 0:
+            self.fuel = 0 # in case we burned into the negatives
+            MODE = FUELING
+
+        # fuel graphics
+        stars.oled.text("fuel", 0, 6 * 8)
+        fuel_width = int((stars.WIDTH - 36) * (self.fuel / self.MAX_FUEL))
+        for x in range(1, 5):
+            stars.oled.hline(36, (6 * 8) + x, fuel_width, 1)
+
+    def add(self, amount):
+        self.fuel = min(self.MAX_FUEL, self.fuel + amount)
+
+fuel = Fuel()
 
 
 class Mission:
@@ -114,23 +111,23 @@ class Mission:
 mission = Mission(random.randint(2000, 5000))
 while True:
     if MODE == FLYING:
-        STATE_TM.show(" fly")
+        stars.oled.text("flying", 0, 7 * 8)
         if PRESSED:
             MODE = FUELING
             PRESSED = 0
     elif MODE == FUELING:
-        STATE_TM.show("fuel")
+        stars.oled.text("refueling", 0, 7 * 8)
         if PRESSED:
             MODE = FLYING
             PRESSED = 0
     elif MODE == PARKED:
-        STATE_TM.show("park")
+        stars.oled.text("orbiting", 0, 7 * 8)
         if PRESSED:
             mission = Mission(random.randint(2000, 5000))
             MODE = FLYING
             PRESSED = 0
     else:
-        STATE_TM.show(" err")
+        stars.oled.text("error!", 0, 7 * 8)
 
     stars.tick()
     fuel.tick()
