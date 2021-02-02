@@ -1,5 +1,6 @@
 import random
 
+import framebuf
 from machine import ADC, I2C, Pin
 from ssd1306 import SSD1306_I2C
 
@@ -20,6 +21,14 @@ FUELING = 1
 PARKED = 2
 MODE = PARKED
 
+with open("ship.pbm", "rb") as fp:
+    fp.readline()
+    fp.readline()
+    fp.readline()
+    ship_bytes = bytearray(fp.read())
+
+SHIP = framebuf.FrameBuffer(ship_bytes, 16, 16, framebuf.MONO_HLSB)
+
 class Starfield:
 
     WIDTH  = 128
@@ -36,11 +45,19 @@ class Starfield:
         for d in self.drops:
             if d[1] >= 0:
                 self.oled.vline(d[0], d[1], d[2], 1)
-            d[1] += d[3]
+
+            if MODE == FLYING:
+                d[1] += d[3] * 3
+            else:
+                d[1] += d[3]
+
             if d[1] > self.HEIGHT:
                 d[1] = random.randint(-3, 0)
                 d[0] = random.randint(0, self.WIDTH)
-                d[2] = random.randint(0, 3)
+                if MODE == FLYING:
+                    d[2] = random.randint(6, 10)
+                else:
+                    d[2] = random.randint(0, 3)
         if self.text:
             for idx, txt in enumerate(self.text):
                 self.oled.text(txt, 0, idx * 8)
@@ -107,6 +124,30 @@ class Mission:
         line_len = int(stars.WIDTH * self.flown/self.goal_distance)
         stars.oled.hline(0, 17, line_len, 1)
 
+stars.oled.fill(0)
+stars.oled.blit(SHIP, 54, 20)
+stars.oled.show()
+import utime
+
+utime.sleep_ms(2000)
+
+def ship_cycle():
+    x = int(stars.WIDTH / 2)
+    mn, mx = 0, stars.WIDTH - 16
+    while True:
+        v = random.random()
+        if v > 0.98:
+            x += 1
+        elif v < 0.02:
+            x -= 1
+
+        if x > mx:
+            x = mx
+        elif x < mn:
+            x = mn
+        yield x
+ship_x = ship_cycle()
+
 # game loop
 mission = Mission(random.randint(2000, 5000))
 while True:
@@ -128,6 +169,8 @@ while True:
             PRESSED = 0
     else:
         stars.oled.text("error!", 0, 7 * 8)
+
+    stars.oled.blit(SHIP, next(ship_x), 20)
 
     stars.tick()
     fuel.tick()
