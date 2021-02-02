@@ -35,14 +35,12 @@ class Fuel:
 
     def tick(self):
         global MODE
-
-
         burn_rate = int(10 * (pot.read_u16() / 65535))
 
         if MODE == FLYING and self.fuel > 0:
             self.fuel -= (1 + burn_rate)
         elif MODE == FUELING:
-            self.fuel += 1
+            self.add(1)
         if self.fuel <= 0:
             self.fuel = 0 # in case we burned into the negatives
             MODE = FUELING
@@ -51,6 +49,7 @@ class Fuel:
 
     def add(self, amount):
         self.fuel = min(9999, self.fuel + amount)
+
 fuel = Fuel()
 
 
@@ -90,7 +89,7 @@ class Mission:
         self.flown = 0
         self.reward = int(self.goal_distance * (max(.1, min(.5, random.random()))))
         self.done = False
-        stars.text = ["mission distance", "%d/%d" % (self.flown, self.goal_distance)]
+        self.draw_mission()
 
     def tick(self):
         global MODE
@@ -104,7 +103,12 @@ class Mission:
                 fuel.add(self.reward)
                 stars.text = ["mission complete", "reward %d fuel" % self.reward]
             else:
-                stars.text = ["mission distance", "%d/%d" % (self.flown, self.goal_distance)]
+                self.draw_mission()
+
+    def draw_mission(self):
+        stars.text = ["mission distance", "%d/%d" % (self.flown, self.goal_distance)]
+        line_len = int(stars.WIDTH * self.flown/self.goal_distance)
+        stars.oled.hline(0, 17, line_len, 1)
 
 # game loop
 mission = Mission(random.randint(2000, 5000))
