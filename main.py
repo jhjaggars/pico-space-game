@@ -1,10 +1,10 @@
 import random
 
 import framebuf
+import utime
 from machine import ADC, I2C, Pin
 from ssd1306 import SSD1306_I2C
 
-button = Pin(6, Pin.IN, Pin.PULL_DOWN)
 PRESSED = 0
 
 def button_press(b):
@@ -12,22 +12,16 @@ def button_press(b):
     if PRESSED == 0 and b.value():
         PRESSED = 1
 
+button = Pin(1, Pin.IN, Pin.PULL_UP)
 button.irq(handler=button_press, trigger=Pin.IRQ_RISING)
-
-pot = ADC(Pin(26))
+y_pot = ADC(Pin(26))
+x_pot = ADC(Pin(27))
 
 FLYING = 0
 FUELING = 1
 PARKED = 2
 MODE = PARKED
-
-with open("ship.pbm", "rb") as fp:
-    fp.readline()
-    fp.readline()
-    fp.readline()
-    ship_bytes = bytearray(fp.read())
-
-SHIP = framebuf.FrameBuffer(ship_bytes, 16, 16, framebuf.MONO_HLSB)
+BOOSTING = False
 
 class Starfield:
 
@@ -38,7 +32,7 @@ class Starfield:
         i2c = I2C(0)
         self.oled = SSD1306_I2C(self.WIDTH, self.HEIGHT, i2c)
         self.oled.fill(0)
-        self.drops = [[random.randint(0, self.WIDTH), random.randint(-32, 0), random.randint(1, 3), random.randint(1,3)] for _ in range(10)]
+        self.drops = [[random.randint(0, self.WIDTH), random.randint(-32, 0), random.randint(1, 2), random.randint(1,3)] for _ in range(10)]
         self.text = []
 
     def tick(self):
@@ -47,7 +41,7 @@ class Starfield:
                 self.oled.vline(d[0], d[1], d[2], 1)
 
             if MODE == FLYING:
-                d[1] += d[3] * 3
+                d[1] += d[3] * (5 if BOOSTING else 3)
             else:
                 d[1] += d[3]
 
@@ -63,6 +57,12 @@ class Starfield:
                 self.oled.text(txt, 0, idx * 8)
         self.oled.show()
         self.oled.fill(0)
+
+    def clampx(self, x):
+        return max(0, min(self.WIDTH, x))
+
+    def clampy(self, y):
+        return max(16, min(self.HEIGHT, y))
 stars = Starfield()
 
 
@@ -74,7 +74,7 @@ class Fuel:
 
     def tick(self):
         global MODE
-        burn_rate = int(10 * (pot.read_u16() / 65535))
+        burn_rate = 8 if BOOSTING else 1
 
         if MODE == FLYING and self.fuel > 0:
             self.fuel -= (1 + burn_rate)
@@ -85,15 +85,118 @@ class Fuel:
             MODE = FUELING
 
         # fuel graphics
-        stars.oled.text("fuel", 0, 6 * 8)
+        stars.oled.text("fuel", 0, 7 * 8)
         fuel_width = int((stars.WIDTH - 36) * (self.fuel / self.MAX_FUEL))
         for x in range(1, 5):
-            stars.oled.hline(36, (6 * 8) + x, fuel_width, 1)
+            stars.oled.hline(36, (7 * 8) + x, fuel_width, 1)
 
     def add(self, amount):
         self.fuel = min(self.MAX_FUEL, self.fuel + amount)
-
 fuel = Fuel()
+
+
+class Pickup:
+
+    def __init__(self, active_deadline=120000):
+        self.x = stars.clampx(random.randint(0, 128))
+        self.y = stars.clampy(random.randint(0, 64))
+        self.active_deadline = utime.ticks_ms() + active_deadline
+        self.last_moved = 0
+
+    def tick(self):
+        now = utime.ticks_ms()
+        if now < self.active_deadline:
+            return
+
+        if now > self.last_moved + 500:
+            self.x = stars.clampx(self.x + random.choice((-1, 0, 1)))
+            self.y = stars.clampy(self.y + random.choice((-1, 0, 1)))
+            self.last_moved = now
+
+        self.draw()
+
+    def draw(self):
+        pass
+
+
+class FuelPickup(Pickup):
+
+    def __init__(self):
+        super().__init__(active_deadline=120000)
+        self.v = random.randint(1000, 4000)
+
+    def draw(self):
+        stars.oled.text("F", self.x, self.y)
+
+    def collide(self, ship):
+        if utime.ticks_ms() >= self.active_deadline:
+            ship.fuel.add(self.v)
+
+
+class BoostPickup(Pickup):
+
+    def __init__(self):
+        super().__init__(active_deadline=60000)
+        self.duration = 4000
+        self.start_time = None
+
+    def draw(self):
+        stars.oled.text("B", self.x, self.y)
+
+    def tick(self):
+        if self.start_time and utime.ticks_ms() > self.start_time + self.duration:
+            return False
+
+        if not self.start_time:
+            super().tick()
+
+        return True
+
+    def collide(self, ship):
+        if BOOSTING:
+            return False
+
+        now = utime.ticks_ms()
+        if now >= self.active_deadline:
+            self.start_time = now
+            return True
+        return False
+
+
+class Ship:
+
+    def __init__(self, fuel):
+        with open("ship3.pbm", "rb") as fp:
+            fp.readline()
+            fp.readline()
+            fp.readline()
+            ship_bytes = bytearray(fp.read())
+            self.fb = framebuf.FrameBuffer(ship_bytes, 16, 16, framebuf.MONO_HLSB)
+            self.y = 20
+            self.x = int(stars.WIDTH / 2) - 8
+            self.fuel = fuel
+            self.move_size = 2
+
+    def tick(self):
+        v = x_pot.read_u16()
+        if v < 29000:
+            self.x = max(0, self.x - self.move_size)
+        elif v > 36000:
+            self.x = min(stars.WIDTH - 16, self.x + self.move_size)
+
+        yv = y_pot.read_u16()
+        if yv < 29000:
+            self.y = max(0, self.y - self.move_size)
+        elif yv > 36000:
+            self.y = min(48, self.y + self.move_size)
+
+        stars.oled.blit(self.fb, self.x, self.y)
+
+    def collides(self, pickup):
+        if (self.x <= pickup.x < self.x + 16
+        and self.y <= pickup.y < self.y + 16):
+            return True
+        return False
 
 
 class Mission:
@@ -109,69 +212,62 @@ class Mission:
         global MODE
         global fuel
         if MODE == FLYING and not self.done:
-            distance_mod = 1 + int(2 * (pot.read_u16() / 65535))
+            distance_mod = 4 if BOOSTING else 1
             self.flown += distance_mod
             if self.flown >= self.goal_distance:
                 self.done = True
                 MODE = PARKED
                 fuel.add(self.reward)
-                stars.text = ["mission complete", "reward %d fuel" % self.reward]
+                stars.text = ["Mission complete!", "Got %d fuel!" % self.reward]
             else:
                 self.draw_mission()
 
     def draw_mission(self):
-        stars.text = ["mission distance", "%d/%d" % (self.flown, self.goal_distance)]
+        if MODE != PARKED:
+            stars.text = ["Mission time!"]
+        else:
+            stars.text = ["Accept mission?"]
         line_len = int(stars.WIDTH * self.flown/self.goal_distance)
-        stars.oled.hline(0, 17, line_len, 1)
+        for x in range(4):
+            stars.oled.hline(0, 12 + x, line_len, 1)
 
 stars.oled.fill(0)
-stars.oled.blit(SHIP, 54, 20)
 stars.oled.show()
-import utime
-
-utime.sleep_ms(2000)
-
-def ship_cycle():
-    x = int(stars.WIDTH / 2)
-    mn, mx = 0, stars.WIDTH - 16
-    while True:
-        v = random.random()
-        if v > 0.98:
-            x += 1
-        elif v < 0.02:
-            x -= 1
-
-        if x > mx:
-            x = mx
-        elif x < mn:
-            x = mn
-        yield x
-ship_x = ship_cycle()
 
 # game loop
 mission = Mission(random.randint(2000, 5000))
+ship = Ship(fuel)
+fuelPickup = FuelPickup()
+boostPickup = BoostPickup()
 while True:
     if MODE == FLYING:
-        stars.oled.text("flying", 0, 7 * 8)
         if PRESSED:
             MODE = FUELING
             PRESSED = 0
     elif MODE == FUELING:
-        stars.oled.text("refueling", 0, 7 * 8)
         if PRESSED:
             MODE = FLYING
             PRESSED = 0
     elif MODE == PARKED:
-        stars.oled.text("orbiting", 0, 7 * 8)
         if PRESSED:
             mission = Mission(random.randint(2000, 5000))
             MODE = FLYING
             PRESSED = 0
-    else:
-        stars.oled.text("error!", 0, 7 * 8)
-
-    stars.oled.blit(SHIP, next(ship_x), 20)
 
     stars.tick()
+    ship.tick()
     fuel.tick()
     mission.tick()
+    fuelPickup.tick()
+    if not boostPickup.tick():
+        del boostPickup
+        BOOSTING = False
+        boostPickup = BoostPickup()
+
+    if ship.collides(fuelPickup):
+        fuelPickup.collide(ship)
+        del fuelPickup
+        fuelPickup = FuelPickup()
+
+    if ship.collides(boostPickup) and boostPickup.collide(ship):
+        BOOSTING = True
